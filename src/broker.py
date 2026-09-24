@@ -47,6 +47,14 @@ def assert_demo_account(account_info, demo_trade_mode: int) -> None:
         )
 
 
+def assert_live_account_allowed(account_info, login: int, server: str) -> None:
+    if account_info.login != login or account_info.server != server:
+        raise OrderError(
+            f"Refusing to trade: connected to {account_info.login}@{account_info.server}, "
+            f"only {login}@{server} is allowed"
+        )
+
+
 def pick_filling(symbol_filling_flags: int, api) -> int:
     """Choose an order filling mode the broker supports for this symbol."""
     if symbol_filling_flags & SYMBOL_FILLING_FOK:
@@ -58,12 +66,13 @@ def pick_filling(symbol_filling_flags: int, api) -> int:
 
 class LiveBroker:
     def __init__(self, api, symbol: str, magic: int, digits: int,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep, max_lot: float | None = None) -> None:
         self.api = api
         self.symbol = symbol
         self.magic = magic
         self.digits = digits
         self._sleep = sleep
+        self.max_lot = max_lot
         info = api.symbol_info(symbol)
         if info is None:
             raise OrderError(f"symbol_info failed for {symbol}: {api.last_error()}")
@@ -87,6 +96,8 @@ class LiveBroker:
     # --- open ----------------------------------------------------------------
     def open(self, side: str, lots: float, sl_distance: float, tp_distance: float,
              comment: str = "forex-bot") -> Fill:
+        if self.max_lot is not None and lots > self.max_lot + 1e-9:
+            raise OrderError(f"Lot {lots} exceeds the hard maximum {self.max_lot}")
         last = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             tick = self._tick()

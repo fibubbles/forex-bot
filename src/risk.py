@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from src.config_schema import HARD_MAX_RISK_PER_TRADE_PCT, RiskConfig
+from src.config_schema import HARD_MAX_RISK_PER_TRADE_PCT, MicroLiveConfig, RiskConfig
 from src.timeutils import is_past_friday_cutoff
 
 
@@ -126,3 +126,39 @@ def check_entry(
 
     risk_amount = lots * sl_distance / spec.tick_size * spec.tick_value
     return RiskDecision(allowed=True, lots=lots, risk_amount=risk_amount)
+
+
+def check_micro_entry(
+    micro: MicroLiveConfig,
+    cfg: RiskConfig,
+    equity: float,
+    open_positions: int,
+    spec: SymbolSpec,
+    sl_distance: float,
+    spread_points: float,
+    typical_spread_points: float,
+    now_utc: datetime | None = None,
+) -> RiskDecision:
+    """Micro live experiment: fixed lot, equity floor, max 1 position (rules agreed with the user)."""
+    reasons: list[str] = []
+
+    if equity < micro.equity_floor:
+        reasons.append(f"EQUITY FLOOR: {equity:.2f} < {micro.equity_floor:.2f} (experiment over)")
+    if open_positions >= 1:
+        reasons.append(f"Max open positions reached ({open_positions}/1)")
+    if not spec.volume_min <= micro.fixed_lot <= spec.volume_max:
+        reasons.append(f"Fixed lot {micro.fixed_lot} outside broker limits {spec.volume_min}-{spec.volume_max}")
+    if typical_spread_points > 0 and spread_points > cfg.max_spread_multiplier * typical_spread_points:
+        reasons.append(
+            f"Spread {spread_points:.0f} pts > {cfg.max_spread_multiplier}x typical {typical_spread_points:.0f}"
+        )
+    if is_past_friday_cutoff(cfg.friday_close_hours_before, now_utc):
+        reasons.append("Friday cutoff: no new entries before weekend")
+    min_sl = spec.stops_level_points * spec.point
+    if sl_distance <= min_sl:
+        reasons.append(f"SL distance {sl_distance:.5f} not above broker stops level {min_sl:.5f}")
+
+    if reasons:
+        return RiskDecision(allowed=False, reasons=reasons)
+    risk_amount = micro.fixed_lot * sl_distance / spec.tick_size * spec.tick_value
+    return RiskDecision(allowed=True, lots=micro.fixed_lot, risk_amount=risk_amount)

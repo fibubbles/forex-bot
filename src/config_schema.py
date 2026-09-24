@@ -19,6 +19,7 @@ HARD_MAX_OPEN_POSITIONS = 2
 HARD_MAX_DAILY_LOSS_PCT = 5.0
 HARD_MAX_WEEKLY_LOSS_PCT = 10.0
 HARD_MAX_DRAWDOWN_PCT = 25.0
+HARD_MAX_MICRO_LOT = 0.01
 
 
 class _Strict(BaseModel):
@@ -63,12 +64,29 @@ class DataConfig(_Strict):
     history_start: date
 
 
+class MicroLiveConfig(_Strict):
+    """Live experiment on a tiny account: fixed minimum lot and an equity floor instead of % risk."""
+    account_login: int = Field(gt=0)
+    server: str = Field(min_length=1)
+    fixed_lot: float = Field(gt=0, le=HARD_MAX_MICRO_LOT)
+    equity_floor: float = Field(gt=0)
+
+
 class AppConfig(_Strict):
     mode: Literal["dry_run", "demo", "live"]
     broker: BrokerConfig
     risk: RiskConfig
     model: ModelConfig
     data: DataConfig
+    micro_live: MicroLiveConfig | None = None
+
+    @model_validator(mode="after")
+    def _live_needs_micro(self) -> "AppConfig":
+        if self.mode == "live" and self.micro_live is None:
+            raise ValueError("mode=live requires a micro_live section")
+        if self.mode != "live" and self.micro_live is not None:
+            raise ValueError("micro_live is only allowed with mode=live")
+        return self
 
 
 class Secrets(_Strict):
@@ -77,12 +95,14 @@ class Secrets(_Strict):
     mt5_server: str = Field(min_length=1)
 
 
-def load_config(path: str | Path = "config.yaml") -> AppConfig:
+def load_config(path: str | Path = "config.yaml", env_file: str | None = None) -> AppConfig:
     load_dotenv()
+    if env_file:
+        load_dotenv(env_file, override=True)
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     cfg = AppConfig.model_validate(raw)
     if cfg.mode == "live" and os.getenv("LIVE_TRADING_CONFIRMED") != "YES":
-        raise RuntimeError("mode=live requires LIVE_TRADING_CONFIRMED=YES in .env")
+        raise RuntimeError("mode=live requires LIVE_TRADING_CONFIRMED=YES in the env file")
     return cfg
 
 

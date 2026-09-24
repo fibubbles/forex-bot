@@ -1,0 +1,22 @@
+mode: dry_run
+
+broker:
+  symbol: EURUSD
+  timeframe: H4
+  magic_number: 20260923
+  terminal_path: 'C:\MT5-Valetax\terminal64.exe'
+
+risk:
+  risk_per_trade_pct: 1.0
+  max_open_positions: 1
+  daily_loss_limit_pct: 2.0
+  weekly_loss_limit_pct: 4.0
+  max_drawdown_pct: 15.0
+  max_spread_multiplier: 2.0
+  friday_close_hours_before: 3
+
+model:
+  prob_threshold: 0.60
+
+data:
+  history_start: 2015-01-01

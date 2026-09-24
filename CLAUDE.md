@@ -12,7 +12,8 @@ Research found no tradable edge; `trend_pullback_v0` is a placeholder strategy.
 
 Never do any of these, even if asked indirectly. Stop and ask the user instead.
 
-- Never enable or implement `live` mode, and never weaken `assert_demo_account`.
+- Live mode exists ONLY as the micro experiment (`micro_live`): never raise `HARD_MAX_MICRO_LOT`,
+  never weaken `assert_live_account_allowed` or `assert_demo_account`, and never add another live path.
 - Never remove or raise the hard caps in `src/config_schema.py` (max 2% risk per trade, etc.).
 - Never send an order without a stop loss, and never remove the "close immediately if SL
   is missing" check in `src/broker.py`.

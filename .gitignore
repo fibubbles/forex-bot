@@ -11,3 +11,4 @@ state/
 *.pkl
 *.tmp
 .env.*
+config.live.yaml

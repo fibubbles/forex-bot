@@ -27,6 +27,8 @@ Every box must be ticked before any real money is deposited. Tick a box only wit
 - [ ] Live mode implemented with extra locks (explicit confirmation, server allowlist,
       maximum lot cap) and reviewed with tests
 - [ ] First live run uses the minimum lot only
+- [ ] Broker is NOT on the SC Investor Alert List (check https://www.sc.com.my/investment-checker)
+- [ ] Minimum withdrawal is below the planned deposit (test a small withdrawal first)
 
 ## C. Money rules (agreed before depositing)
 

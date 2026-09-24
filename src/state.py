@@ -118,6 +118,15 @@ class EquityTracker:
         self._save()
         log.warning("Kill switch manually reset (peak=%.2f)", self.state.peak_equity)
 
+    def latch(self, reason: str) -> None:
+        """Latch the kill switch for a reason other than % drawdown (e.g. the micro equity floor)."""
+        if self.state is None or self.state.killed:
+            return
+        self.state.killed = True
+        self.state.killed_reason = reason
+        self._save()
+        log.critical("KILL SWITCH LATCHED: %s", reason)
+
 
 DEFAULT_CONTROL_PATH = Path("state/control.json")
 
