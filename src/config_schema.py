@@ -86,8 +86,13 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     return cfg
 
 
-def load_secrets() -> Secrets:
+def load_secrets(env_file: str | None = None) -> Secrets:
+    """MT5 credentials. env_file (e.g. '.env.demo') overrides values from .env."""
     load_dotenv()
+    if env_file:
+        if not Path(env_file).exists():
+            raise FileNotFoundError(f"{env_file} not found")
+        load_dotenv(env_file, override=True)
     return Secrets(
         mt5_login=os.getenv("MT5_LOGIN"),
         mt5_password=os.getenv("MT5_PASSWORD"),

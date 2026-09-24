@@ -10,3 +10,4 @@ state/
 .dukascopy-cache/
 *.pkl
 *.tmp
+.env.*
