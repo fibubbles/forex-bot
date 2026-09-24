@@ -1,0 +1,9 @@
+MetaTrader5>=5.0.45
+pandas>=2.2
+numpy>=1.26
+pydantic>=2.6
+pyyaml>=6.0
+python-dotenv>=1.0
+lightgbm>=4.3
+tzdata>=2024.1
+pytest>=8.0

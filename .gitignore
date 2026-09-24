@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+data/
+models/*/
+logs/
+reports/
+state/
+.dukascopy-cache/
+*.pkl
+*.tmp
