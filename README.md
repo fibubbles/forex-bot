@@ -1,8 +1,8 @@
 # forex-bot
 
 A risk-managed FX trading system for MetaTrader 5: a research pipeline for testing
-strategy ideas honestly, and a paper-trading executor with Telegram control and
-independent monitoring.
+strategy ideas honestly, and a paper-trading executor with an LLM news-risk veto,
+Telegram control and independent monitoring.
 
 > **Status:** Three structured research studies found **no tradable edge** after costs.
 > The executor therefore runs in `dry_run` (paper trading) only. This is not financial advice.
@@ -13,18 +13,24 @@ independent monitoring.
   triple-barrier labelling, walk-forward training, backtesting
 - **Safety-first execution:** hard risk caps in code, latching kill switch,
   daily/weekly loss limits, Friday flattening, restart-safe position tracking
+- **LLM news-risk veto:** Claude (Haiku + web search) can only allow or block a trade;
+  answers are validated as JSON, and any API error or invalid answer blocks the trade
 - **Remote control and monitoring:** Telegram alerts and commands (whitelisted chat),
   plus a separate-process watchdog via Windows Task Scheduler
 - **Honest research:** pre-registered hypotheses, documented amendments, and
   negative results kept on record
-- **61 automated tests**, including no-lookahead checks for features and labels
+- **69 automated tests**, including no-lookahead checks for features and labels
 
 ## Architecture
 
 ```
 MT5 terminal ──> mt5_client ──> data_checks ──> features ──> strategy ──> Signal
                                                                             │
-Telegram <──> notifier <──> executor <──── risk (sizing + rules) <──────────┘
+                                                  risk (sizing + rules) <───┘
+                                                            │
+                                         news veto (Claude + web search)
+                                                            │
+Telegram <──> notifier <──> executor <──────────────────────┘
                               │
                  ┌────────────┼──────────────┐
                  ▼            ▼              ▼
@@ -36,7 +42,8 @@ Telegram <──> notifier <──> executor <──── risk (sizing + rules)
 ```
 
 Each H4 bar close: validate data → check paper SL/TP → update equity → kill switch /
-pause checks → features → strategy signal → risk checks → paper order → log + notify.
+pause checks → features → strategy signal → risk checks → news veto (Claude) →
+paper order → log + notify.
 
 ## Safety design
 
@@ -48,6 +55,8 @@ pause checks → features → strategy signal → risk checks → paper order �
 | Large drawdown | Kill switch at 15% from peak; **latches** across restarts until manual reset |
 | Duplicate positions after restart | Positions identified by magic number and synced from MT5 on startup |
 | Weekend gaps | All positions flattened before the Friday close |
+| Trading into high-impact news | Claude veto with web search; API errors or invalid answers block the trade (fail-safe) |
+| LLM overriding the strategy | The veto can only allow or block; it never sets direction, size, SL or TP |
 | Stale or malicious remote commands | Telegram commands only from one chat ID; pending updates skipped at startup |
 | Bot crashes silently | Heartbeat file + separate watchdog process with Telegram alerts |
 | Accidental live trading | Executor refuses any mode except `dry_run`; research used a read-only investor login |
@@ -70,6 +79,8 @@ Key lessons, documented in `research/`:
   before running, and bugs were fixed only per the original spec.
 - **Downloaders fail silently.** Rate-limited requests produced year-long holes; explicit
   gap checks caught them before they affected results.
+- **LLM instructions need precise scope.** The first veto prompt blocked on non-USD/EUR
+  central banks and medium-impact data; an explicit event list fixed it.
 
 ## Project structure
 
@@ -90,11 +101,12 @@ src/
   db.py              SQLite log of decisions, trades, events
   paper.py           Paper broker with realistic simulated fills
   notifier.py        Telegram alerts + whitelisted commands
+  veto.py            Claude news-risk veto (allow/block only, fail-safe)
   executor.py        Main loop (dry_run only)
   watchdog.py        Separate-process health monitor
 scripts/             Data fetching, dataset building, training, research, diagnostics
 research/            Pre-registrations, amendments and results
-tests/               61 pytest tests
+tests/               69 pytest tests
 ```
 
 ## Setup (Windows)
@@ -116,6 +128,7 @@ MT5_SERVER=...
 LIVE_TRADING_CONFIRMED=NO
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
+ANTHROPIC_API_KEY=...     # optional: enables the news veto
 ```
 
 Adjust `config.yaml` (symbol, timeframe, risk limits, MT5 terminal path).
@@ -128,6 +141,7 @@ python -m scripts.check_connection                     # verify MT5 access
 python -m scripts.fetch_data                           # download H4 history
 python -m scripts.build_dataset                        # features + labels
 python -m scripts.run_training                         # walk-forward evaluation
+python -m scripts.test_veto_live                       # one real veto call (costs a few cents)
 python -m src.executor --paper-equity 1100 --once      # process the latest bar
 python -m src.executor --paper-equity 1100             # run continuously
 python -m src.watchdog                                 # one health check
@@ -139,7 +153,8 @@ Telegram commands: `/status`, `/pause`, `/resume`, `/closeall`, `/help`.
 
 Windows Smart App Control blocked some compiled dependencies (pyarrow's parquet module,
 parts of scikit-learn). The project avoids them instead of disabling OS security:
-CSV storage, and ROC AUC plus isotonic calibration implemented in numpy.
+CSV storage, ROC AUC plus isotonic calibration implemented in numpy, and the Claude and
+Telegram APIs called with the standard library instead of SDKs.
 
 ## Disclaimer
 

@@ -29,6 +29,7 @@ from src.risk import SymbolSpec, check_entry
 from src.state import ControlFlags, EquityTracker, foreign_positions, write_heartbeat
 from src.strategy import Signal, TrendPullback
 from src.timeutils import is_past_friday_cutoff
+from src.veto import NewsVeto
 
 log = logging.getLogger("executor")
 
@@ -62,6 +63,7 @@ class Executor:
         self.tracker = EquityTracker(DRY_RUN_STATE)
         self.control = ControlFlags()
         self.notifier = TelegramNotifier.from_env()
+        self.veto = NewsVeto.from_env()
         self.strategy = TrendPullback()
 
         self.spec: SymbolSpec | None = None
@@ -93,6 +95,7 @@ class Executor:
 
         self.notifier.skip_pending()
         self.notifier.send(f"🟢 Bot started ({self.cfg.mode})\nStrategy: {self.strategy.name}\n"
+                           f"News veto: {'ON' if self.veto else 'OFF'}\n"
                            f"Paused: {self.control.paused}\nSend /help for commands")
 
     def reconnect(self) -> None:
@@ -210,11 +213,22 @@ class Executor:
             return self._decide({**base, **sig}, "blocked_risk", decision.reasons, bar_time)
 
         entry, sl, tp = order_prices(signal, bid, ask, self.digits)
+
+        veto_txt = "disabled"
+        if self.veto is not None:
+            v = self.veto.check(signal.side, entry, sl, tp, now)
+            veto_txt = f"{v.action}: {v.reason}"
+            if not v.allowed:
+                self.notifier.send(f"🛡️ VETO blocked {signal.side.upper()} {self.symbol}\n{v.reason}"
+                                   + (f"\nEvents: {', '.join(v.events)}" if v.events else ""))
+                return self._decide({**base, **sig, "veto": veto_txt}, "blocked_veto",
+                                    [v.reason, *v.events], bar_time)
+
         self.paper.open(signal.side, decision.lots, bid, ask, sl, tp, signal.strategy, spread_pts)
         self.notifier.send(f"📈 PAPER {signal.side.upper()} {decision.lots} {self.symbol}\n"
                            f"Entry {entry}\nSL {sl} | TP {tp}\nRisk {decision.risk_amount:.2f}\n"
-                           f"{signal.reason}")
-        return self._decide({**base, **sig, "lots": decision.lots}, "paper_open",
+                           f"{signal.reason}\nVeto: {veto_txt}")
+        return self._decide({**base, **sig, "lots": decision.lots, "veto": veto_txt}, "paper_open",
                             [signal.reason, f"entry {entry} sl {sl} tp {tp}",
                              f"risk {decision.risk_amount:.2f}"], bar_time)
 
