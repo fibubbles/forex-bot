@@ -31,3 +31,25 @@ def test_control_flags_persist_across_restart(tmp_path):
     assert ControlFlags(path).paused
     ControlFlags(path).set_paused(False)
     assert not ControlFlags(path).paused
+
+
+def test_failed_messages_are_queued_and_resent():
+    n = TelegramNotifier("dummy-token", 111)
+    sent, down = [], {"yes": True}
+
+    def fake_call(method, **params):
+        if down["yes"]:
+            raise TimeoutError("telegram unreachable")
+        if method == "sendMessage":
+            sent.append(params["text"])
+        return []
+
+    n._call = fake_call
+    n.send("📈 DEMO BUY")                 # fails -> queued, backoff starts
+    assert sent == [] and n._outbox == ["📈 DEMO BUY"]
+    assert n.poll_commands() == []       # still in backoff: no network call
+
+    down["yes"] = False
+    n._backoff_until = 0.0               # pretend 60 s have passed
+    n.poll_commands()                    # successful poll flushes the queue
+    assert sent == ["📈 DEMO BUY"] and n._outbox == []

@@ -162,3 +162,10 @@ class TradeLog:
             (mode,),
         )[0]
         return float(row["p"])
+
+    def last_bar_time(self, mode: str) -> str | None:
+        """Last bar processed in this mode, so dry_run and demo do not share progress."""
+        rows = self._query(
+            "SELECT bar_time_utc FROM decisions WHERE mode=? ORDER BY id DESC LIMIT 1", (mode,)
+        )
+        return rows[0]["bar_time_utc"] if rows else None

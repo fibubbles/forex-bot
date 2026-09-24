@@ -1,41 +1,44 @@
-"""Main loop. Currently supports mode=dry_run ONLY (paper trading, no orders sent).
+"""Main loop. Supports mode=dry_run (paper trading) and mode=demo (real orders, DEMO account only).
 
 Run:
-  python -m src.executor --paper-equity 1100          # loop forever
-  python -m src.executor --paper-equity 1100 --once   # process latest closed bar, then exit
+  python -m src.executor --start-equity 1100                                              # dry_run
+  python -m src.executor --config config.demo.yaml --env .env.demo --start-equity 1100    # demo
+  add --once to process the latest closed bar and exit
 """
 from __future__ import annotations
 
 import argparse
 import logging
-import math
 import sys
 import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import MetaTrader5 as mt5
 import pandas as pd
 
+from src.broker import LiveBroker, OrderError, assert_demo_account
 from src.config_schema import AppConfig, load_config, load_secrets
 from src.data_checks import validate_bars
 from src.db import TradeLog
 from src.features import build_features
 from src.mt5_client import MT5Client, MT5Error
 from src.notifier import HELP_TEXT, TelegramNotifier
-from src.paper import MODE as PAPER_MODE
 from src.paper import PaperBroker
 from src.risk import SymbolSpec, check_entry
 from src.state import ControlFlags, EquityTracker, foreign_positions, write_heartbeat
 from src.strategy import Signal, TrendPullback
 from src.timeutils import is_past_friday_cutoff
+from src.trading import LiveTrading, PaperTrading
 from src.veto import NewsVeto
 
 log = logging.getLogger("executor")
 
 BARS_TO_LOAD = 1500
 POLL_SECONDS = 10
-DRY_RUN_STATE = Path("state/equity_dry_run.json")
+MIN_TYPICAL_SPREAD_POINTS = 10.0  # some demo servers report 0 spread; keep the spread filter active
+SUPPORTED_MODES = ("dry_run", "demo")
 
 
 def order_prices(signal: Signal, bid: float, ask: float, digits: int) -> tuple[float, float, float]:
@@ -50,51 +53,66 @@ def order_prices(signal: Signal, bid: float, ask: float, digits: int) -> tuple[f
 
 
 class Executor:
-    def __init__(self, cfg: AppConfig, paper_equity: float) -> None:
-        if cfg.mode != "dry_run":
-            raise RuntimeError(f"mode={cfg.mode} is not supported yet: only dry_run is implemented")
+    def __init__(self, cfg: AppConfig, start_equity: float, env_file: str | None = None) -> None:
+        if cfg.mode not in SUPPORTED_MODES:
+            raise RuntimeError(f"mode={cfg.mode} is not supported: only {SUPPORTED_MODES}")
         self.cfg = cfg
+        self.mode = cfg.mode
+        self.label = "PAPER" if cfg.mode == "dry_run" else "DEMO"
         self.symbol = cfg.broker.symbol
         self.tf = cfg.broker.timeframe
-        self.paper_equity = paper_equity
+        self.start_equity = start_equity
 
-        self.client = MT5Client(load_secrets(), cfg.broker.terminal_path)
+        self.client = MT5Client(load_secrets(env_file), cfg.broker.terminal_path)
         self.trade_log = TradeLog()
-        self.tracker = EquityTracker(DRY_RUN_STATE)
+        self.tracker = EquityTracker(Path(f"state/equity_{cfg.mode}.json"))
         self.control = ControlFlags()
         self.notifier = TelegramNotifier.from_env()
         self.veto = NewsVeto.from_env()
         self.strategy = TrendPullback()
 
         self.spec: SymbolSpec | None = None
-        self.paper: PaperBroker | None = None
+        self.trading: PaperTrading | LiveTrading | None = None
         self.digits = 5
         self.typical_spread = 0.0
 
-        last = self.trade_log.recent_decisions(1)
-        self.last_bar = pd.Timestamp(last[0]["bar_time_utc"]) if last else None
+        last = self.trade_log.last_bar_time(cfg.mode)
+        self.last_bar = pd.Timestamp(last) if last else None
 
     # --- lifecycle ---------------------------------------------------------
     def startup(self) -> None:
         self.client.connect()
-        self.spec = SymbolSpec.from_mt5(self.client.symbol(self.symbol))
-        self.digits = round(-math.log10(self.spec.point))
+        acc = self.client.account()
+        info = self.client.symbol(self.symbol)
+        self.spec = SymbolSpec.from_mt5(info)
+        self.digits = info.digits
 
         clean = self._load_bars()
-        self.typical_spread = float(clean["spread"].tail(500).median())
-        self.paper = PaperBroker(self.trade_log, self.spec, self.typical_spread)
+        self.typical_spread = max(float(clean["spread"].tail(500).median()), MIN_TYPICAL_SPREAD_POINTS)
+
+        if self.mode == "demo":
+            assert_demo_account(acc, mt5.ACCOUNT_TRADE_MODE_DEMO)  # refuse to start on a real account
+            broker = LiveBroker(mt5, self.symbol, self.cfg.broker.magic_number, self.digits)
+            self.trading = LiveTrading(broker, self.trade_log, mode="demo")
+            for ticket in self.trading.adopt_orphans():
+                self.notifier.send(f"⚠️ Adopted untracked bot position #{ticket}")
+            self.trading.check_exits()  # record anything closed while the bot was off
+        else:
+            self.trading = PaperTrading(PaperBroker(self.trade_log, self.spec, self.typical_spread))
 
         foreign = foreign_positions(self.client.positions(self.symbol), self.symbol, self.cfg.broker.magic_number)
         if foreign:
             log.warning("%d manual position(s) on %s will be ignored", len(foreign), self.symbol)
 
-        msg = (f"mode={self.cfg.mode} strategy={self.strategy.name} paper_equity={self.paper_equity} "
-               f"typical_spread={self.typical_spread:.0f} last_bar={self.last_bar}")
+        msg = (f"mode={self.mode} account={acc.login}@{acc.server} strategy={self.strategy.name} "
+               f"start_equity={self.start_equity} typical_spread={self.typical_spread:.0f} "
+               f"last_bar={self.last_bar}")
         self.trade_log.log_event("INFO", "startup", msg)
         log.info("Startup: %s", msg)
 
         self.notifier.skip_pending()
-        self.notifier.send(f"🟢 Bot started ({self.cfg.mode})\nStrategy: {self.strategy.name}\n"
+        self.notifier.send(f"🟢 Bot started ({self.mode})\nAccount: {acc.server}\n"
+                           f"Strategy: {self.strategy.name}\n"
                            f"News veto: {'ON' if self.veto else 'OFF'}\n"
                            f"Paused: {self.control.paused}\nSend /help for commands")
 
@@ -111,17 +129,17 @@ class Executor:
         return clean
 
     def _equity(self, bid: float, ask: float) -> float:
-        return (self.paper_equity + self.trade_log.realized_profit(PAPER_MODE)
-                + self.paper.floating_profit(bid, ask))
+        """Sizing equity: start equity + this mode's realised P/L + floating P/L of our positions."""
+        return (self.start_equity + self.trade_log.realized_profit(self.trading.mode)
+                + self.trading.floating_profit(bid, ask))
 
     # --- telegram ------------------------------------------------------------
     def _status_text(self, bid: float, ask: float) -> str:
         last = self.trade_log.recent_decisions(1)
         last_txt = f"{last[0]['bar_time_utc']} -> {last[0]['action']}" if last else "none"
-        trades = self.paper.open_trades()
         pos = "\n".join(f"  #{t['ticket']} {t['side']} {t['lots']} @ {t['entry_price']} "
-                        f"SL {t['sl']} TP {t['tp']}" for t in trades) or "  none"
-        return (f"📊 Status ({self.cfg.mode})\nEquity: {self._equity(bid, ask):.2f}\n"
+                        f"SL {t['sl']} TP {t['tp']}" for t in self.trading.open_trades()) or "  none"
+        return (f"📊 Status ({self.mode})\nEquity: {self._equity(bid, ask):.2f}\n"
                 f"Paused: {self.control.paused} | Kill switch: {self.tracker.killed}\n"
                 f"Open positions:\n{pos}\nLast decision: {last_txt}")
 
@@ -142,17 +160,20 @@ class Executor:
                     self.control.set_paused(False)
                     self.notifier.send("▶️ Resumed: new entries allowed.")
             elif cmd == "/closeall":
-                closed = self.paper.close_all(bid, ask, "telegram")
                 self.control.set_paused(True)
-                self.notifier.send(f"🛑 Closed {len(closed)} position(s) and paused. /resume to continue.")
+                try:
+                    closed = self.trading.close_all(bid, ask, "telegram")
+                    self.notifier.send(f"🛑 Closed {len(closed)} position(s) and paused. /resume to continue.")
+                except OrderError as e:
+                    self.notifier.send(f"⚠️ /closeall FAILED: {e}\nCheck MT5 manually!")
             else:
                 self.notifier.send(HELP_TEXT)
 
     def _notify_close(self, ticket: int) -> None:
         t = self.trade_log.trade(ticket)
         r = f"{t['r_multiple']:+.2f}R" if t["r_multiple"] is not None else "n/a"
-        emoji = "✅" if t["profit"] > 0 else "❌"
-        self.notifier.send(f"{emoji} PAPER CLOSE #{ticket} {t['side']}\n"
+        emoji = "✅" if (t["profit"] or 0) > 0 else "❌"
+        self.notifier.send(f"{emoji} {self.label} CLOSE #{ticket} {t['side']}\n"
                            f"Exit {t['exit_price']} | P/L {t['profit']:.2f} ({r})")
 
     # --- one cycle -----------------------------------------------------------
@@ -165,32 +186,38 @@ class Executor:
 
         self.handle_commands(bid, ask)
 
+        # Demo: the broker's server closes positions at SL/TP at any time, so check every poll.
+        if self.mode == "demo":
+            for ticket in self.trading.check_exits():
+                self._notify_close(ticket)
+
         # Friday: flatten before the weekend, checked every poll (not only at bar close).
-        if is_past_friday_cutoff(self.cfg.risk.friday_close_hours_before, now) and self.paper.open_trades():
-            closed = self.paper.close_all(bid, ask, "friday")
-            self.trade_log.log_event("INFO", "friday_close", f"closed {len(closed)} paper trade(s)")
-            self.notifier.send(f"🗓️ Friday cutoff: closed {len(closed)} position(s) before the weekend")
+        if is_past_friday_cutoff(self.cfg.risk.friday_close_hours_before, now) and self.trading.open_count():
+            try:
+                closed = self.trading.close_all(bid, ask, "friday")
+                self.trade_log.log_event("INFO", "friday_close", f"closed {len(closed)} position(s)")
+                self.notifier.send(f"🗓️ Friday cutoff: closed {len(closed)} position(s) before the weekend")
+            except OrderError as e:
+                self.notifier.send_throttled("friday", f"⚠️ Friday close FAILED: {e}\nCheck MT5 manually!")
 
         bar_time = clean["time"].iloc[-1]
         if self.last_bar is not None and bar_time <= self.last_bar:
             return False
 
-        # Check paper SL/TP on every bar closed since the last cycle (catches up after downtime).
-        if self.last_bar is not None:
-            for b in clean[clean["time"] > self.last_bar].itertuples():
-                for ticket in self.paper.on_bar(b.open, b.high, b.low, b.close):
-                    self._notify_close(ticket)
+        # Dry run: simulate SL/TP on every bar closed since the last cycle.
+        if self.mode == "dry_run" and self.last_bar is not None:
+            for ticket in self.trading.check_exits(clean[clean["time"] > self.last_bar]):
+                self._notify_close(ticket)
 
         spread_pts = (ask - bid) / self.spec.point
         equity = self._equity(bid, ask)
         was_killed = self.tracker.killed
-        acct = self.tracker.update(equity, len(self.paper.open_trades()),
-                                   self.cfg.risk.max_drawdown_pct, now)
+        acct = self.tracker.update(equity, self.trading.open_count(), self.cfg.risk.max_drawdown_pct, now)
         if self.tracker.killed and not was_killed:
             self.notifier.send(f"🚨 KILL SWITCH: {self.tracker.state.killed_reason}\n"
                                "Bot stopped opening trades. Manual review required.")
 
-        base = dict(bar_time_utc=bar_time.isoformat(), mode=self.cfg.mode,
+        base = dict(bar_time_utc=bar_time.isoformat(), mode=self.mode,
                     strategy=self.strategy.name, spread_points=round(spread_pts, 1))
 
         if self.tracker.killed:
@@ -224,12 +251,19 @@ class Executor:
                 return self._decide({**base, **sig, "veto": veto_txt}, "blocked_veto",
                                     [v.reason, *v.events], bar_time)
 
-        self.paper.open(signal.side, decision.lots, bid, ask, sl, tp, signal.strategy, spread_pts)
-        self.notifier.send(f"📈 PAPER {signal.side.upper()} {decision.lots} {self.symbol}\n"
-                           f"Entry {entry}\nSL {sl} | TP {tp}\nRisk {decision.risk_amount:.2f}\n"
-                           f"{signal.reason}\nVeto: {veto_txt}")
-        return self._decide({**base, **sig, "lots": decision.lots, "veto": veto_txt}, "paper_open",
-                            [signal.reason, f"entry {entry} sl {sl} tp {tp}",
+        try:
+            opened = self.trading.open(signal, decision.lots, entry, sl, tp, bid, ask, spread_pts)
+        except OrderError as e:
+            self.notifier.send(f"⚠️ {self.label} order FAILED: {e}")
+            return self._decide({**base, **sig, "veto": veto_txt}, "order_failed", [str(e)], bar_time)
+
+        arrow = "📈" if signal.side == "long" else "📉"
+        self.notifier.send(f"{arrow} {self.label} {signal.side.upper()} {decision.lots} {self.symbol}\n"
+                           f"Entry {opened.entry}\nSL {opened.sl} | TP {opened.tp}\n"
+                           f"Risk {decision.risk_amount:.2f}\n{signal.reason}\nVeto: {veto_txt}")
+        action = "paper_open" if self.mode == "dry_run" else "order_open"
+        return self._decide({**base, **sig, "lots": decision.lots, "veto": veto_txt}, action,
+                            [signal.reason, f"#{opened.ticket} entry {opened.entry} sl {opened.sl} tp {opened.tp}",
                              f"risk {decision.risk_amount:.2f}"], bar_time)
 
     def _decide(self, fields: dict, action: str, reasons: list[str], bar_time: pd.Timestamp) -> bool:
@@ -254,13 +288,16 @@ def _setup_logging() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Forex bot executor (dry_run only)")
-    parser.add_argument("--paper-equity", type=float, required=True, help="simulated starting equity")
+    parser = argparse.ArgumentParser(description="Forex bot executor (dry_run or demo)")
+    parser.add_argument("--config", default="config.yaml", help="config file (config.demo.yaml for demo)")
+    parser.add_argument("--env", default=None, help="extra env file with MT5 credentials, e.g. .env.demo")
+    parser.add_argument("--start-equity", "--paper-equity", dest="start_equity", type=float, required=True,
+                        help="starting equity used for position sizing and loss limits")
     parser.add_argument("--once", action="store_true", help="process the latest closed bar and exit")
     args = parser.parse_args()
 
     _setup_logging()
-    ex = Executor(load_config(), args.paper_equity)
+    ex = Executor(load_config(args.config), args.start_equity, args.env)
     ex.startup()
     try:
         if args.once:

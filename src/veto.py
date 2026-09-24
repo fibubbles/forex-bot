@@ -17,6 +17,8 @@ from typing import Callable, Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
+from src.net import OPENER
+
 log = logging.getLogger(__name__)
 
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -104,7 +106,7 @@ class NewsVeto:
                 "content-type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
+        with OPENER.open(req, timeout=TIMEOUT_SECONDS) as resp:
             return json.load(resp)
 
     def build_request(self, side: str, entry: float, sl: float, tp: float, now_utc: datetime) -> dict:

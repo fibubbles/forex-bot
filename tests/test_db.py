@@ -33,3 +33,12 @@ def test_short_trade_slippage_sign(tmp_path):
                     requested_price=1.10000, entry_price=1.09998,
                     sl=1.10300, tp=1.09600, spread_points=13)
     assert log.trade(202)["slippage_points"] == pytest.approx(2.0)  # sold lower = worse
+
+
+def test_last_bar_time_is_per_mode(tmp_path):
+    log = TradeLog(tmp_path / "bot.db")
+    log.log_decision("2026-09-24T01:00:00+00:00", "dry_run", "no_signal")
+    log.log_decision("2026-09-24T05:00:00+00:00", "demo", "no_signal")
+    assert log.last_bar_time("dry_run") == "2026-09-24T01:00:00+00:00"
+    assert log.last_bar_time("demo") == "2026-09-24T05:00:00+00:00"
+    assert log.last_bar_time("live") is None

@@ -17,7 +17,12 @@ import urllib.request
 
 from dotenv import load_dotenv
 
+from src.net import OPENER
+
 log = logging.getLogger(__name__)
+
+BACKOFF_SECONDS = 60
+MAX_OUTBOX = 20
 
 HELP_TEXT = (
     "Commands:\n"
@@ -53,12 +58,14 @@ class NullNotifier:
 
 
 class TelegramNotifier:
-    def __init__(self, token: str, chat_id: int | str, timeout: float = 10) -> None:
+    def __init__(self, token: str, chat_id: int | str, timeout: float = 20) -> None:
         self._base = f"https://api.telegram.org/bot{token}"
         self.chat_id = int(chat_id)
         self.timeout = timeout
         self._offset: int | None = None
         self._last_sent: dict[str, float] = {}
+        self._backoff_until = 0.0
+        self._outbox: list[str] = []
 
     @classmethod
     def from_env(cls) -> "TelegramNotifier | NullNotifier":
@@ -71,17 +78,35 @@ class TelegramNotifier:
 
     def _call(self, method: str, **params):
         data = urllib.parse.urlencode(params).encode()
-        with urllib.request.urlopen(f"{self._base}/{method}", data=data, timeout=self.timeout) as resp:
+        with OPENER.open(f"{self._base}/{method}", data=data, timeout=self.timeout) as resp:
             payload = json.load(resp)
         if not payload.get("ok"):
             raise RuntimeError(f"Telegram {method} failed: {payload.get('description')}")
         return payload["result"]
 
+    def _available(self) -> bool:
+        return time.monotonic() >= self._backoff_until
+
+    def _failed(self, what: str, e: Exception) -> None:
+        log.warning("Telegram %s failed: %s (pausing Telegram for %ds)", what, e, BACKOFF_SECONDS)
+        self._backoff_until = time.monotonic() + BACKOFF_SECONDS
+
+    def _flush(self) -> None:
+        """Send queued messages in order; stop at the first failure and keep the rest."""
+        while self._outbox and self._available():
+            try:
+                self._call("sendMessage", chat_id=self.chat_id, text=self._outbox[0])
+            except Exception as e:
+                self._failed("send", e)
+                return
+            self._outbox.pop(0)
+
     def send(self, text: str) -> None:
-        try:
-            self._call("sendMessage", chat_id=self.chat_id, text=text[:4000])
-        except Exception as e:
-            log.warning("Telegram send failed: %s", e)
+        """Queue the message and try to deliver it. Failed messages are retried later, not lost."""
+        if len(self._outbox) >= MAX_OUTBOX:
+            self._outbox.pop(0)  # keep memory bounded during a long outage
+        self._outbox.append(text[:4000])
+        self._flush()
 
     def send_throttled(self, key: str, text: str, min_interval: float = 600) -> None:
         now = time.monotonic()
@@ -116,11 +141,15 @@ class TelegramNotifier:
         return commands
 
     def poll_commands(self) -> list[str]:
+        if not self._available():
+            return []
         params = {"timeout": 0}
         if self._offset is not None:
             params["offset"] = self._offset
         try:
-            return self.extract_commands(self._call("getUpdates", **params))
+            updates = self._call("getUpdates", **params)
         except Exception as e:
-            log.warning("Telegram poll failed: %s", e)
+            self._failed("poll", e)
             return []
+        self._flush()  # connection works again: deliver anything queued
+        return self.extract_commands(updates)
