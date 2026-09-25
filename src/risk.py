@@ -37,6 +37,11 @@ class SymbolSpec:
             stops_level_points=info.trade_stops_level,
         )
 
+    @property
+    def valid(self) -> bool:
+        """False when the broker has not delivered full symbol data yet (e.g. right after a login)."""
+        return self.tick_size > 0 and self.tick_value > 0 and self.volume_min > 0 and self.volume_step > 0
+
 
 @dataclass(frozen=True)
 class AccountState:
@@ -68,7 +73,7 @@ def position_size(equity: float, risk_pct: float, sl_distance: float, spec: Symb
     """Lots such that hitting the SL loses at most `risk_pct` of equity. 0.0 = don't trade."""
     if not 0 < risk_pct <= HARD_MAX_RISK_PER_TRADE_PCT:
         raise ValueError(f"risk_pct {risk_pct} outside (0, {HARD_MAX_RISK_PER_TRADE_PCT}]")
-    if equity <= 0 or sl_distance <= 0:
+    if equity <= 0 or sl_distance <= 0 or not spec.valid:
         return 0.0
 
     loss_per_lot = sl_distance / spec.tick_size * spec.tick_value
@@ -89,6 +94,8 @@ def check_entry(
 ) -> RiskDecision:
     """Run every pre-trade rule. Entry is allowed only if all pass."""
     reasons: list[str] = []
+    if not spec.valid:
+        reasons.append("Symbol spec invalid (tick value/size is 0): broker data not loaded")
 
     dd = _pct_drop(acct.peak_equity, acct.equity)
     if dd >= cfg.max_drawdown_pct:
@@ -141,6 +148,8 @@ def check_micro_entry(
 ) -> RiskDecision:
     """Micro live experiment: fixed lot, equity floor, max 1 position (rules agreed with the user)."""
     reasons: list[str] = []
+    if not spec.valid:
+        reasons.append("Symbol spec invalid (tick value/size is 0): broker data not loaded")
 
     if equity < micro.equity_floor:
         reasons.append(f"EQUITY FLOOR: {equity:.2f} < {micro.equity_floor:.2f} (experiment over)")

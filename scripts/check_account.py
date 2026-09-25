@@ -32,6 +32,11 @@ def main() -> int:
             return 1
 
         info = client.symbol(sym)
+        for _ in range(20):  # symbol data can be incomplete right after a login
+            if info.trade_tick_value > 0:
+                break
+            time.sleep(0.5)
+            info = client.symbol(sym)
         spec = SymbolSpec.from_mt5(info)
         tick = client.tick(sym)
         for _ in range(10):  # a newly selected symbol may need a moment to receive quotes

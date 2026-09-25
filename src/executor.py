@@ -89,7 +89,14 @@ class Executor:
         self.client.connect()
         acc = self.client.account()
         info = self.client.symbol(self.symbol)
-        self.spec = SymbolSpec.from_mt5(info)
+        for _ in range(20):  # symbol data can be incomplete right after a (re)login
+            self.spec = SymbolSpec.from_mt5(info)
+            if self.spec.valid:
+                break
+            time.sleep(0.5)
+            info = self.client.symbol(self.symbol)
+        else:
+            raise RuntimeError(f"Invalid symbol spec for {self.symbol} (broker data not loaded): {self.spec}")
         self.digits = info.digits
 
         clean = self._load_bars()

@@ -79,3 +79,9 @@ def test_floor_latch_survives_restart(tmp_path):
     t.update(11.62, 0, 100.0, WED)
     t.latch("equity floor")
     assert EquityTracker(path).killed
+
+
+def test_micro_blocks_invalid_spec():
+    bad = SymbolSpec(0.01, 0.01, 0.0, 0.01, 100.0, 0.01)
+    d = check_micro_entry(MICRO, RISK, 1488.79, 0, bad, 25.0, 30, 30, WED)
+    assert not d.allowed and any("spec invalid" in r for r in d.reasons)

@@ -84,3 +84,11 @@ def test_friday_cutoff_blocks():
 def test_missing_sl_blocks():
     d = _check(_acct(), sl=0.0)
     assert not d.allowed
+
+
+def test_invalid_spec_never_trades():
+    bad = SymbolSpec(point=0.01, tick_size=0.01, tick_value=0.0,
+                     volume_min=0.01, volume_max=100.0, volume_step=0.01)
+    assert position_size(10_000, 1.0, 5.0, bad) == 0.0
+    d = check_entry(CFG, _acct(), bad, 5.0, 13, 13, WEDNESDAY)
+    assert not d.allowed and any("spec invalid" in r for r in d.reasons)
