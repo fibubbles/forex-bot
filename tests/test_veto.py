@@ -57,3 +57,17 @@ def test_request_contains_trade_and_web_search():
     body = NewsVeto("dummy").build_request("short", 1.1, 1.11, 1.09, NOW)
     assert "SHORT EURUSD" in body["messages"][0]["content"]
     assert body["tools"][0]["name"] == "web_search"
+
+
+def test_gold_profile_uses_usd_events_and_geopolitics():
+    veto = NewsVeto("dummy", symbol="XAUUSD.vxc")
+    body = veto.build_request("long", 4272.8, 4226.3, 4334.8, NOW)
+    assert "LONG XAUUSD" in body["messages"][0]["content"]
+    assert "geopolitical" in body["system"]
+    assert "ECB" not in body["system"]
+
+
+def test_unknown_symbol_fails_fast():
+    import pytest
+    with pytest.raises(ValueError):
+        NewsVeto("dummy", symbol="BTCUSD")

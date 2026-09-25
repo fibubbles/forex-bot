@@ -26,25 +26,53 @@ API_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 TIMEOUT_SECONDS = 60
 
-SYSTEM_PROMPT = """You are a risk filter for an automated EURUSD swing-trading bot.
+PROMPT_TEMPLATE = """You are a risk filter for an automated {instrument} trading bot.
 You do NOT choose trades. You only decide whether a proposed trade must be BLOCKED because of news risk.
 
 Use web search to check:
-1. High-impact USD or EUR events within the next 8 hours (NFP, CPI, FOMC or ECB rate decisions, Fed/ECB chair speeches).
-2. Breaking news in the last 6 hours that could cause abnormal EURUSD volatility.
+1. High-impact {currencies} events within the next 8 hours.
+2. Breaking news in the last 6 hours that could cause abnormal {instrument} volatility{extra_news}.
 
 Rules:
-- Block if a high-impact USD or EUR event falls within the next 8 hours.
-- Only these count as high-impact: NFP, US CPI, FOMC and ECB rate decisions, Fed and ECB chair speeches,
-  US GDP, Eurozone CPI flash. Other central banks (SNB, Riksbank, Norges Bank, Banxico, etc.) and
-  medium-impact data (e.g. weekly jobless claims) are NOT reasons to block.
+- Block if a high-impact {currencies} event falls within the next 8 hours.
+- Only these count as high-impact: {event_list}. {not_reasons}
 - If an event's time is unknown, search for its scheduled time. Block only if you cannot rule out
-  that a high-impact USD or EUR event falls inside the window.
-- Block if there is a major surprise or shock event affecting USD or EUR.
+  that a high-impact event falls inside the window.
+- Block if there is a major surprise or shock event affecting {instrument}.
 - If search results are unclear or unavailable, BLOCK.
 
 Your final message must be ONLY this JSON object, with no other text:
-{"action": "allow" or "block", "reason": "<max 20 words>", "events": ["<event, time UTC>"]}"""
+{{"action": "allow" or "block", "reason": "<max 20 words>", "events": ["<event, time UTC>"]}}"""
+
+PROFILES = {
+    "EURUSD": dict(
+        currencies="USD or EUR",
+        event_list=("NFP, US CPI, FOMC and ECB rate decisions, Fed and ECB chair speeches, "
+                    "US GDP, Eurozone CPI flash"),
+        not_reasons=("Other central banks (SNB, Riksbank, Norges Bank, Banxico, etc.) and medium-impact "
+                     "data (e.g. weekly jobless claims) are NOT reasons to block."),
+        extra_news="",
+    ),
+    "XAUUSD": dict(
+        currencies="USD",
+        event_list="NFP, US CPI, US PCE, FOMC rate decisions and minutes, Fed chair speeches, US GDP",
+        not_reasons=("Non-US central banks and medium-impact data (e.g. weekly jobless claims) "
+                     "are NOT reasons to block."),
+        extra_news=" (including major geopolitical escalations, which move gold sharply)",
+    ),
+}
+
+
+def base_symbol(symbol: str) -> str:
+    """'XAUUSD.vxc' -> 'XAUUSD'. Broker suffixes are ignored."""
+    return symbol.split(".")[0].upper()
+
+
+def system_prompt(symbol: str) -> str:
+    base = base_symbol(symbol)
+    if base not in PROFILES:
+        raise ValueError(f"No veto profile for {symbol}; add one to PROFILES before trading it")
+    return PROMPT_TEMPLATE.format(instrument=base, **PROFILES[base])
 
 
 class VetoResult(BaseModel):
@@ -81,19 +109,21 @@ def parse_response(payload: dict) -> VetoResult:
 
 class NewsVeto:
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL,
-                 post: Callable[[dict], dict] | None = None) -> None:
+                 post: Callable[[dict], dict] | None = None, symbol: str = "EURUSD") -> None:
         self.api_key = api_key
         self.model = model
         self._post = post or self._http_post
+        self.instrument = base_symbol(symbol)
+        self.system = system_prompt(symbol)  # fails fast for an unsupported symbol
 
     @classmethod
-    def from_env(cls) -> "NewsVeto | None":
+    def from_env(cls, symbol: str = "EURUSD") -> "NewsVeto | None":
         load_dotenv()
         key = os.getenv("ANTHROPIC_API_KEY")
         if not key:
             log.warning("ANTHROPIC_API_KEY not set: news veto DISABLED")
             return None
-        return cls(key, os.getenv("VETO_MODEL", DEFAULT_MODEL))
+        return cls(key, os.getenv("VETO_MODEL", DEFAULT_MODEL), symbol=symbol)
 
     def _http_post(self, body: dict) -> dict:
         req = urllib.request.Request(
@@ -110,13 +140,13 @@ class NewsVeto:
             return json.load(resp)
 
     def build_request(self, side: str, entry: float, sl: float, tp: float, now_utc: datetime) -> dict:
-        trade = (f"Proposed trade: {side.upper()} EURUSD, entry ~{entry}, SL {sl}, TP {tp}, "
+        trade = (f"Proposed trade: {side.upper()} {self.instrument}, entry ~{entry}, SL {sl}, TP {tp}, "
                  f"time {now_utc:%Y-%m-%d %H:%M} UTC.")
         return {
             "model": self.model,
             "max_tokens": 1024,
             "temperature": 0,
-            "system": SYSTEM_PROMPT,
+            "system": self.system,
             "messages": [{"role": "user", "content": trade}],
             "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
         }

@@ -36,7 +36,7 @@ from src.veto import NewsVeto
 
 log = logging.getLogger("executor")
 
-BARS_TO_LOAD = 1500
+BARS_TO_LOAD = 2500
 POLL_SECONDS = 10
 MIN_TYPICAL_SPREAD_POINTS = 10.0  # some demo servers report 0 spread; keep the spread filter active
 LABELS = {"dry_run": "PAPER", "demo": "DEMO", "live": "LIVE"}
@@ -73,7 +73,7 @@ class Executor:
         self.tracker = EquityTracker(Path(f"state/equity_{cfg.mode}.json"))
         self.control = ControlFlags(Path(f"state/control_{cfg.mode}.json"))
         self.notifier = TelegramNotifier.from_env()
-        self.veto = NewsVeto.from_env()
+        self.veto = NewsVeto.from_env(cfg.broker.symbol)
         self.strategy = TrendPullback()
 
         self.spec: SymbolSpec | None = None
