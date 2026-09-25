@@ -35,3 +35,14 @@ signal day. This separates skill from gold's uptrend.
 
 ## If it fails
 Record the result. Do not change session times, SL/TP, window or filters to make it pass.
+
+
+## Result (2026-09-25): FAIL
+Deviation: the fetched data starts 2022-07-25 (25,000 bars) instead of 2023-06; this only
+affects the observe-only old-feed block, not the decision.
+New feed 2025-2026: 253 trades, win 32.0%, mean R +0.054 (need > +0.10);
+2025 -0.007, 2026 +0.158 (need both > 0); beats always-long by +0.242 (pass).
+Old feed 2022-2024 (observe): 438 trades, mean R -0.096.
+Post-hoc observation (NOT a result): new-feed shorts +0.248 R over 109 trades. Any
+short-only variant must be pre-registered separately and tested on NEW data (forward test),
+never on this sample.
