@@ -2,6 +2,7 @@
 import argparse
 import sys
 
+import MetaTrader5 as mt5
 import pandas as pd
 
 from src.config_schema import load_config, load_secrets
@@ -18,13 +19,20 @@ def main() -> int:
     parser.add_argument("--env", required=True)
     parser.add_argument("--bars", type=int, default=20000)
     parser.add_argument("--horizon", type=int, default=60, help="max bars a trade is held")
+    parser.add_argument("--timeframe", default=None, help="override the config timeframe, e.g. M15")
     args = parser.parse_args()
 
     cfg = load_config(args.config, args.env)
-    sym, tf = cfg.broker.symbol, cfg.broker.timeframe
-    with MT5Client(load_secrets(args.env), cfg.broker.terminal_path) as client:
+    sym, tf = cfg.broker.symbol, args.timeframe or cfg.broker.timeframe
+    if not mt5.initialize(path=cfg.broker.terminal_path, timeout=15000):  # attach only, no re-login
+        print(f"MT5 initialize failed: {mt5.last_error()}")
+        return 1
+    try:
+        client = MT5Client(load_secrets(args.env), cfg.broker.terminal_path)
         info = client.symbol(sym)
         raw = client.get_rates(sym, tf, args.bars)
+    finally:
+        mt5.shutdown()  # closes THIS script's connection only
 
     clean, report = validate_bars(raw, tf)
     spread = max(float(clean["spread"].tail(500).median()), 10.0) * info.point

@@ -26,3 +26,11 @@ Written BEFORE the first live gold trade. Do not change the criteria after seein
 ## If the criteria fail
 Record the result. Either stop, or keep running purely for learning.
 No deposit top-ups to "win back" losses.
+
+## Amendment 1 (2026-09-25), before the first live trade
+News veto turned OFF for this experiment. Reason: at 0.01 cent lots the expected result per
+trade is about $0.01 while each veto call costs about $0.06, so the veto would cost several
+times more than it could protect. Risk per trade is already capped (~$0.25), and the spread
+filter still blocks entries during spread spikes. API cost criterion therefore becomes ~$0.
+M15 was evaluated with eval_symbol (2025-06 to 2026-09): edge over random small and
+inconsistent (mostly long 2025), so the timeframe stays H1.
