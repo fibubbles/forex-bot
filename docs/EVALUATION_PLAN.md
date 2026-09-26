@@ -34,3 +34,9 @@ times more than it could protect. Risk per trade is already capped (~$0.25), and
 filter still blocks entries during spread spikes. API cost criterion therefore becomes ~$0.
 M15 was evaluated with eval_symbol (2025-06 to 2026-09): edge over random small and
 inconsistent (mostly long 2025), so the timeframe stays H1.
+
+## Amendment 2 (2026-09-26), before the first bot trade
+Manual trades were made on the bot's Cent account and RM28 was withdrawn, so equity fell
+from 1488.79 to 1004.96 USC. Equity floor lowered from 750 to 500 USC (~20 losses of room).
+Evaluation starts from 1004.96 USC. From now on the bot's account is not traded manually;
+manual trading uses a separate account.
