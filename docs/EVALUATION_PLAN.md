@@ -40,3 +40,11 @@ Manual trades were made on the bot's Cent account and RM28 was withdrawn, so equ
 from 1488.79 to 1004.96 USC. Equity floor lowered from 750 to 500 USC (~20 losses of room).
 Evaluation starts from 1004.96 USC. From now on the bot's account is not traded manually;
 manual trading uses a separate account.
+
+## Amendment 3 (2026-09-26), before the first bot trade: secondary observation
+Study 5 (candle confirmation) failed only on the random-subset test. As a secondary,
+observe-only check on NEW data: after 30 closed live trades, split them by whether the
+signal bar matched the Study 5 candle definitions (engulfing or pin bar in the trade
+direction) and compare mean R. This never changes the bot during the experiment and does
+not affect the primary pass/fail decision. If confirmed trades are fewer than 10, report
+the numbers and draw no conclusion.
