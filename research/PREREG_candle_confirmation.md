@@ -41,3 +41,13 @@ signals counted, same as eval_symbol).
 
 ## If it fails
 Record the result. Do not change the candle definitions, thresholds or barriers to make it pass.
+
+## Result (2026-09-26): FAIL
+New feed: base 995 signals, mean R +0.068; confirmed 91 signals, mean R +0.181.
+Criteria 1-4 passed (+0.113 over base; 2025 +0.278 vs +0.071; 2026 +0.087 vs +0.064).
+Criterion 5 failed: random subsets of 91 base signals matched or beat +0.181 in 18.8% of
+10,000 draws (p = 0.188), so the improvement is not distinguishable from chance.
+Old feed (observe): confirmed +0.008 vs base +0.022 (worse than base).
+Post-hoc observation (NOT a result): by pattern, hammer +0.282 (39), shooting star +0.562 (8),
+bear engulfing +0.071 (14), bull engulfing 0.000 (30). Too small and chosen after the fact;
+any pattern-specific variant needs its own pre-registration and new data.
