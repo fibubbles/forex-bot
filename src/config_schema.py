@@ -19,7 +19,7 @@ HARD_MAX_OPEN_POSITIONS = 2
 HARD_MAX_DAILY_LOSS_PCT = 5.0
 HARD_MAX_WEEKLY_LOSS_PCT = 10.0
 HARD_MAX_DRAWDOWN_PCT = 25.0
-HARD_MAX_MICRO_LOT = 0.01
+HARD_MAX_MICRO_LOT = 0.1  # raised from 0.01 on 2026-09-27 by the user's explicit decision
 
 
 class _Strict(BaseModel):

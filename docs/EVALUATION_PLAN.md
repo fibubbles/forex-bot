@@ -66,3 +66,8 @@ M5 breakout without H1/M15 filters: mean R -0.063, so the filters help but no ed
 A withdrawal over the weekend lowered equity from 1004.96 to 825.95 USC. Evaluation of
 mtf_v1 starts from 825.95 USC. Equity floor stays at 500 USC (~20 losses of ~16 USC).
 Any further deposit or withdrawal during the experiment is recorded here with its date.
+
+## Amendment 6 (2026-09-27), before the first mtf_v1 trade
+On the user's explicit decision, fixed lot raised from 0.01 to 0.1 (~160 USC per stop loss).
+With equity 825.95 and floor 500 USC, about 2 losses end the experiment. The floor is not
+lowered after it is hit.

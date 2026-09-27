@@ -37,7 +37,7 @@ def test_micro_section_only_allowed_in_live():
 
 def test_micro_lot_hard_cap():
     with pytest.raises(ValidationError):
-        MicroLiveConfig(account_login=1, server="x", fixed_lot=0.02, equity_floor=5.0)
+        MicroLiveConfig(account_login=1, server="x", fixed_lot=0.11, equity_floor=5.0)
 
 
 def test_micro_entry_allowed():
