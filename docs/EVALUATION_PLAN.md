@@ -48,3 +48,21 @@ signal bar matched the Study 5 candle definitions (engulfing or pin bar in the t
 direction) and compare mean R. This never changes the bot during the experiment and does
 not affect the primary pass/fail decision. If confirmed trades are fewer than 10, report
 the numbers and draw no conclusion.
+## Amendment 4 (2026-09-27), before the first bot trade: strategy changed to mtf_v1
+On the user's decision, the live bot switches from trend_pullback_v0 (H1) to mtf_v1
+(H1 structure -> M15 setup -> M5 breakout entry, rules fixed in src/mtf.py). mtf_v1 is NOT
+validated; scripts/research_mtf.py is an informational history check, not a pre-registered test.
+The evaluation restarts with mtf_v1: review after 30 CLOSED mtf_v1 trades using the same
+"worth continuing" criteria. Risk limits are unchanged (fixed 0.01 lot, equity floor 500 USC,
+spread filter, Friday cutoff). Amendment 3 (candle-confirmation observation) referred to
+trend_pullback signal bars and no longer applies. Rules are not tuned during the experiment.
+
+History check (scripts/research_mtf.py, 2025-08-10 to 2026-09-25, informational): mtf_v1
+1369 trades (23/week), win 33.1%, mean R -0.013, total -18.2R (~-294 USC), worst losing
+streak 19. By year: 2025 long +0.129 (492 trades both sides), 2026 long -0.082, short -0.036.
+M5 breakout without H1/M15 filters: mean R -0.063, so the filters help but no edge is shown.
+
+## Amendment 5 (2026-09-27), before the first mtf_v1 trade
+A withdrawal over the weekend lowered equity from 1004.96 to 825.95 USC. Evaluation of
+mtf_v1 starts from 825.95 USC. Equity floor stays at 500 USC (~20 losses of ~16 USC).
+Any further deposit or withdrawal during the experiment is recorded here with its date.

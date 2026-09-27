@@ -28,7 +28,7 @@ class _Strict(BaseModel):
 
 class BrokerConfig(_Strict):
     symbol: str = Field(min_length=3)
-    timeframe: Literal["M15", "H1", "H4", "D1"]
+    timeframe: Literal["M5", "M15", "H1", "H4", "D1"]
     magic_number: int = Field(gt=0)
     terminal_path: str | None = None
 
@@ -72,8 +72,12 @@ class MicroLiveConfig(_Strict):
     equity_floor: float = Field(gt=0)
 
 
+STRATEGY_TIMEFRAMES = {"trend_pullback_v0": ("M15", "H1", "H4", "D1"), "mtf_v1": ("M5",)}
+
+
 class AppConfig(_Strict):
     mode: Literal["dry_run", "demo", "live"]
+    strategy: Literal["trend_pullback_v0", "mtf_v1"] = "trend_pullback_v0"
     broker: BrokerConfig
     risk: RiskConfig
     model: ModelConfig
@@ -86,6 +90,9 @@ class AppConfig(_Strict):
             raise ValueError("mode=live requires a micro_live section")
         if self.mode != "live" and self.micro_live is not None:
             raise ValueError("micro_live is only allowed with mode=live")
+        if self.broker.timeframe not in STRATEGY_TIMEFRAMES[self.strategy]:
+            raise ValueError(f"strategy {self.strategy} needs timeframe in "
+                             f"{STRATEGY_TIMEFRAMES[self.strategy]}, got {self.broker.timeframe}")
         return self
 
 

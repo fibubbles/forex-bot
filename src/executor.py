@@ -25,6 +25,7 @@ from src.data_checks import validate_bars
 from src.db import TradeLog
 from src.features import build_features
 from src.mt5_client import MT5Client, MT5Error
+from src.mtf import MultiTimeframe
 from src.notifier import HELP_TEXT, TelegramNotifier
 from src.paper import PaperBroker
 from src.risk import SymbolSpec, check_entry, check_micro_entry
@@ -37,6 +38,7 @@ from src.veto import NewsVeto
 log = logging.getLogger("executor")
 
 BARS_TO_LOAD = 2500
+HTF_BARS = 400  # H1 and M15 bars loaded for the mtf_v1 filters
 POLL_SECONDS = 10
 MIN_TYPICAL_SPREAD_POINTS = 10.0  # some demo servers report 0 spread; keep the spread filter active
 LABELS = {"dry_run": "PAPER", "demo": "DEMO", "live": "LIVE"}
@@ -74,7 +76,7 @@ class Executor:
         self.control = ControlFlags(Path(f"state/control_{cfg.mode}.json"))
         self.notifier = TelegramNotifier.from_env()
         self.veto = NewsVeto.from_env(cfg.broker.symbol)
-        self.strategy = TrendPullback()
+        self.strategy = MultiTimeframe() if cfg.strategy == "mtf_v1" else TrendPullback()
 
         self.spec: SymbolSpec | None = None
         self.trading: PaperTrading | LiveTrading | None = None
@@ -144,11 +146,12 @@ class Executor:
         time.sleep(5)
         self.client.connect()
 
-    def _load_bars(self) -> pd.DataFrame:
-        raw = self.client.get_rates(self.symbol, self.tf, BARS_TO_LOAD)
-        clean, report = validate_bars(raw, self.tf)
+    def _load_bars(self, tf: str | None = None, count: int = BARS_TO_LOAD) -> pd.DataFrame:
+        tf = tf or self.tf
+        raw = self.client.get_rates(self.symbol, tf, count)
+        clean, report = validate_bars(raw, tf)
         if not report.ok:
-            raise RuntimeError(f"Data check failed: {report.summary()}")
+            raise RuntimeError(f"Data check failed ({tf}): {report.summary()}")
         return clean
 
     def _equity(self, bid: float, ask: float) -> float:
@@ -254,13 +257,18 @@ class Executor:
         if self.control.paused:
             return self._decide(base, "paused", ["paused via Telegram"], bar_time)
 
-        feats = build_features(clean)
-        if feats.empty or feats["time"].iloc[-1] != bar_time:
-            return self._decide(base, "skip", ["features unavailable for latest bar"], bar_time)
+        if isinstance(self.strategy, MultiTimeframe):
+            # Only CLOSED H1/M15 bars (validate_bars drops the forming one): no lookahead.
+            view = self.strategy.analyse(self._load_bars("H1", HTF_BARS), self._load_bars("M15", HTF_BARS), clean)
+            signal, note = view.signal, view.summary
+        else:
+            feats = build_features(clean)
+            if feats.empty or feats["time"].iloc[-1] != bar_time:
+                return self._decide(base, "skip", ["features unavailable for latest bar"], bar_time)
+            signal, note = self.strategy.evaluate(feats), None
 
-        signal = self.strategy.evaluate(feats)
         if signal is None:
-            return self._decide(base, "no_signal", [f"equity {equity:.2f}"], bar_time)
+            return self._decide(base, "no_signal", [f"equity {equity:.2f}", *([note] if note else [])], bar_time)
 
         sig = dict(side=signal.side, sl_distance=signal.sl_distance, tp_distance=signal.tp_distance)
         if self.mode == "live":

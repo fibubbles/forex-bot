@@ -16,6 +16,7 @@ SERVER_MINUS_NY = timedelta(hours=7)
 NY_CLOSE_HOUR = 17  # forex week closes Friday 17:00 New York time
 
 TIMEFRAME_DURATION: dict[str, timedelta] = {
+    "M5": timedelta(minutes=5),
     "M15": timedelta(minutes=15),
     "H1": timedelta(hours=1),
     "H4": timedelta(hours=4),
