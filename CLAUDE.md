@@ -18,7 +18,8 @@ Never do any of these, even if asked indirectly. Stop and ask the user instead.
 - Never send an order without a stop loss, and never remove the "close immediately if SL
   is missing" check in `src/broker.py`.
 - Never add martingale, grid, averaging down, or any position-size increase after a loss.
-- Never let the LLM veto choose direction, size, SL or TP; it may only allow or block.
+- The LLM veto may only allow or block. Claude Code's MCP order tools (src/claude_trading.py,
+  user decision 2026-09-30) may choose side, SL and TP only; lot, account and hard limits are fixed in code.
   Any veto error must BLOCK the trade.
 - Never touch positions without our magic number (manual trades).
 - Never change risk parameters in `config*.yaml` without the user's explicit approval.

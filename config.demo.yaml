@@ -1,7 +1,7 @@
 mode: demo
 
 broker:
-  symbol: EURUSD
+  symbol: XAUUSD.vxc
   timeframe: H4
   magic_number: 20260923
   terminal_path: 'C:\Program Files\MetaTrader 5\terminal64.exe'

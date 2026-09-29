@@ -20,6 +20,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from src.broker import LiveBroker, OrderError, assert_demo_account, assert_live_account_allowed
+from src.claude_trading import CLAUDE_MAGIC_OFFSET
 from src.config_schema import AppConfig, load_config, load_secrets
 from src.data_checks import validate_bars
 from src.db import TradeLog
@@ -80,6 +81,7 @@ class Executor:
 
         self.spec: SymbolSpec | None = None
         self.trading: PaperTrading | LiveTrading | None = None
+        self.claude_broker: LiveBroker | None = None  # Claude Code's positions (MCP order tools)
         self.digits = 5
         self.typical_spread = 0.0
 
@@ -119,6 +121,9 @@ class Executor:
                 max_lot = self.micro.fixed_lot
             broker = LiveBroker(mt5, self.symbol, self.cfg.broker.magic_number, self.digits, max_lot=max_lot)
             self.trading = LiveTrading(broker, self.trade_log, mode=self.mode)
+            if self.mode == "live":
+                self.claude_broker = LiveBroker(mt5, self.symbol, self.cfg.broker.magic_number + CLAUDE_MAGIC_OFFSET,
+                                                self.digits, max_lot=max_lot)
             for ticket in self.trading.adopt_orphans():
                 self.notifier.send(f"⚠️ Adopted untracked bot position #{ticket}")
             self.trading.check_exits()  # record anything closed while the bot was off
@@ -220,9 +225,13 @@ class Executor:
                 self._notify_close(ticket)
 
         # Friday: flatten before the weekend, checked every poll (not only at bar close).
-        if is_past_friday_cutoff(self.cfg.risk.friday_close_hours_before, now) and self.trading.open_count():
+        claude_open = self.claude_broker.positions() if self.claude_broker else []
+        if is_past_friday_cutoff(self.cfg.risk.friday_close_hours_before, now) and (
+                self.trading.open_count() or claude_open):
             try:
                 closed = self.trading.close_all(bid, ask, "friday")
+                if self.claude_broker:
+                    closed += self.claude_broker.close_all("friday")
                 self.trade_log.log_event("INFO", "friday_close", f"closed {len(closed)} position(s)")
                 self.notifier.send(f"🗓️ Friday cutoff: closed {len(closed)} position(s) before the weekend")
             except OrderError as e:
@@ -240,6 +249,8 @@ class Executor:
         spread_pts = (ask - bid) / self.spec.point
         equity = self._equity(bid, ask)
         open_count = self.trading.open_count()
+        if self.mode == "live":  # one position at a time on the symbol, whoever opened it (bot, Claude, manual)
+            open_count = max(open_count, len(self.client.positions(self.symbol)))
         was_killed = self.tracker.killed
         max_dd = NO_DRAWDOWN_LATCH if self.mode == "live" else self.cfg.risk.max_drawdown_pct
         acct = self.tracker.update(equity, open_count, max_dd, now)

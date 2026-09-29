@@ -71,3 +71,9 @@ Any further deposit or withdrawal during the experiment is recorded here with it
 On the user's explicit decision, fixed lot raised from 0.01 to 0.1 (~160 USC per stop loss).
 With equity 825.95 and floor 500 USC, about 2 losses end the experiment. The floor is not
 lowered after it is hit.
+
+
+## Note (2026-09-30): experiment paused
+The account balance reached 0 USC through manual trading on the bot's account, so the
+mtf_v1 evaluation has no trades to review. MCP server for Claude Code added (read tools and
+guarded order tools). The live bot is stopped until a new deposit and a new amendment.
