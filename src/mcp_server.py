@@ -29,11 +29,17 @@ sys.path.insert(0, str(ROOT))
 import pandas as pd  # noqa: E402
 import yaml  # noqa: E402
 
-SERVER_NAME, SERVER_VERSION = "mt5", "1.1.0"
-INSTRUCTIONS = ("MT5 for a REAL-MONEY cent account. Order tools are enabled. Before any order: look at "
-                "account, positions, bars and strategy_view, then call preview_order and show the user "
-                "the risk. Never place an order the user did not ask for in this conversation. "
-                "Lot size is fixed by the server; SL and TP are mandatory.")
+SERVER_NAME, SERVER_VERSION = "mt5", "1.2.0"
+ORDER_RULES = ("Order tools are enabled. Before any order: look at account, positions, bars and "
+               "strategy_view, then call preview_order and show the user the risk. Never place an order "
+               "the user did not ask for in this conversation. Lot size is fixed by the server; SL and TP "
+               "are mandatory.")
+
+
+def instructions(mode: str) -> str:
+    if mode == "demo":
+        return "MT5 DEMO account (no real money; orders are refused on a real account). " + ORDER_RULES
+    return "MT5 REAL-MONEY account. " + ORDER_RULES
 DEFAULT_PROTOCOL = "2025-06-18"
 CONFIG_PATH = Path(os.getenv("MT5_MCP_CONFIG", "config.live.yaml"))
 DB_PATH = Path("state/bot.db")
@@ -56,11 +62,15 @@ def load_settings(path: Path = CONFIG_PATH) -> dict:
         raise ToolError(f"{path} not found; set MT5_MCP_CONFIG to another config file")
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     b, micro = raw["broker"], raw.get("micro_live") or {}
+    demo = raw.get("claude_demo") or {}  # only in config.claude-demo.yaml (MCP-only file)
     return {"terminal_path": b.get("terminal_path"), "symbol": b["symbol"],
             "magic": int(b["magic_number"]), "mode": raw.get("mode", "?"),
             "account_login": micro.get("account_login"), "server": micro.get("server"),
-            "fixed_lot": micro.get("fixed_lot"), "equity_floor": micro.get("equity_floor"),
-            "friday_hours": raw.get("risk", {}).get("friday_close_hours_before", 3)}
+            "fixed_lot": micro.get("fixed_lot") or demo.get("lot"),
+            "equity_floor": micro.get("equity_floor", demo.get("equity_floor", 0.0)),
+            "friday_hours": raw.get("risk", {}).get("friday_close_hours_before", 3),
+            "max_spread_points": demo.get("max_spread_points"),
+            "login_env": demo.get("login_env")}
 
 
 def _source(magic: int, bot_magic: int) -> str:
@@ -81,10 +91,27 @@ class MT5:
     def api(self):
         if self._mt5 is None:
             import MetaTrader5 as mt5  # Windows-only package, imported lazily
-            path = self.settings["terminal_path"]
-            ok = mt5.initialize(path=path, timeout=60000) if path else mt5.initialize(timeout=60000)
-            if not ok:
+            s = self.settings
+            kwargs: dict[str, Any] = {"timeout": 60000}
+            if s["terminal_path"]:
+                kwargs["path"] = s["terminal_path"]
+            if s["mode"] == "demo" and s.get("login_env"):
+                # DEMO only: log the terminal into the demo account so it can never sit on a real one.
+                # A real-account password is never read by this server.
+                from src.config_schema import load_secrets
+                sec = load_secrets(s["login_env"])
+                kwargs.update(login=sec.mt5_login, password=sec.mt5_password.get_secret_value(),
+                              server=sec.mt5_server)
+            if not mt5.initialize(**kwargs):
                 raise ToolError(f"MT5 attach failed: {mt5.last_error()}. Is the terminal open and logged in?")
+            if s["mode"] == "demo":
+                acc = mt5.account_info()
+                if (acc is None or acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO
+                        or "demo" not in (acc.server or "").lower()):
+                    who = f"{acc.login}@{acc.server}" if acc else "unknown"
+                    mt5.shutdown()
+                    raise ToolError(f"This is the DEMO server but the terminal is on {who}, not a demo "
+                                    f"account. Refusing everything; log the terminal into the demo account.")
             self._mt5 = mt5
         return self._mt5
 
@@ -142,7 +169,9 @@ class Tools:
                 "balance": a.balance, "equity": a.equity, "margin": a.margin,
                 "free_margin": a.margin_free, "leverage": a.leverage,
                 "account_type": {0: "demo", 1: "contest", 2: "real"}.get(a.trade_mode, a.trade_mode),
-                "algo_trading_allowed": bool(a.trade_allowed)}
+                "algo_trading_allowed": bool(a.trade_allowed),
+                "terminal": getattr(self.mt5.call("terminal_info"), "path", None),
+                "config": str(CONFIG_PATH)}
 
     def positions(self, args: dict) -> list[dict]:
         magic = self.mt5.settings["magic"]
@@ -235,8 +264,12 @@ class Tools:
     def _trader(self):
         from src.claude_trading import ClaudeTrader
         s = self.mt5.settings
-        if s["mode"] != "live" or not s["account_login"] or not s["fixed_lot"]:
-            raise ToolError("order tools need a live config with a micro_live section")
+        if s["mode"] == "live" and not (s["account_login"] and s["fixed_lot"]):
+            raise ToolError("live order tools need a micro_live section in the config")
+        if s["mode"] == "demo" and not s["fixed_lot"]:
+            raise ToolError("demo order tools need a claude_demo section (use config.claude-demo.yaml)")
+        if s["mode"] not in ("live", "demo"):
+            raise ToolError(f"order tools are not available in mode {s['mode']!r}")
 
         def notify(text: str) -> None:
             try:
@@ -339,10 +372,12 @@ def trading_enabled() -> bool:
     return os.getenv("MT5_MCP_TRADING") == "YES"
 
 
-def active_specs() -> list[tuple[str, str, dict, dict]]:
+def active_specs(mode: str = "live") -> list[tuple[str, str, dict, dict]]:
     specs = [(n, d, s, READ_ONLY) for n, d, s in TOOL_SPECS]
     if trading_enabled():
-        specs += [(n, d, s, READ_ONLY if n == "preview_order" else ORDER_TOOL) for n, d, s in ORDER_SPECS]
+        label = "DEMO account (no real money)." if mode == "demo" else "REAL MONEY."
+        specs += [(n, d.replace("REAL MONEY.", label), s, READ_ONLY if n == "preview_order" else ORDER_TOOL)
+                  for n, d, s in ORDER_SPECS]
     return specs
 
 
@@ -360,14 +395,14 @@ class Server:
                 result = {"protocolVersion": msg.get("params", {}).get("protocolVersion", DEFAULT_PROTOCOL),
                           "capabilities": {"tools": {"listChanged": False}},
                           "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                          "instructions": INSTRUCTIONS if trading_enabled() else
+                          "instructions": instructions(self._mode()) if trading_enabled() else
                                           "Read-only view of MT5 and the forex bot. It cannot place, "
                                           "modify or close orders."}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
                 result = {"tools": [{"name": n, "description": d, "inputSchema": s, "annotations": a}
-                                    for n, d, s, a in active_specs()]}
+                                    for n, d, s, a in active_specs(self._mode())]}
             elif method == "tools/call":
                 result = self._call(msg.get("params") or {})
             else:
@@ -376,6 +411,12 @@ class Server:
             _err(traceback.format_exc())
             return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": str(e)}}
         return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+    def _mode(self) -> str:
+        try:
+            return self.tools.mt5.settings["mode"]
+        except Exception:
+            return "?"
 
     def _call(self, params: dict) -> dict:
         name, args = params.get("name"), params.get("arguments") or {}

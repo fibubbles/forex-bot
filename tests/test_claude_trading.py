@@ -62,13 +62,15 @@ CFG = {"magic": 20260923, "symbol": "XAUUSD.vxc", "fixed_lot": 0.1, "equity_floo
 
 class GoldMT5(FakeMT5):
     TRADE_ACTION_SLTP = 6
+    ACCOUNT_TRADE_MODE_DEMO, ACCOUNT_TRADE_MODE_REAL = 0, 2
 
-    def __init__(self, equity=826.0, login=2511011205, **kw):
+    def __init__(self, equity=826.0, login=2511011205, server="ValetaxIntl-Live8", trade_mode=2, **kw):
         super().__init__(**kw)
-        self.equity, self.login, self.deals = equity, login, []
+        self.equity, self.login, self.server, self.trade_mode, self.deals = equity, login, server, trade_mode, []
 
     def account_info(self):
-        return NS(login=self.login, server="ValetaxIntl-Live8", equity=self.equity, trade_allowed=True)
+        return NS(login=self.login, server=self.server, equity=self.equity, trade_allowed=True,
+                  trade_mode=self.trade_mode)
 
     def terminal_info(self):
         return NS(trade_allowed=True)
@@ -150,3 +152,52 @@ def test_modify_only_tightens_sl():
         t.modify(ticket, 4300.5, None, "above price")
     t.modify(ticket, 4295.0, None, "lock in")
     assert api.sent[-1]["sl"] == 4295.0 and api.sent[-1]["action"] == api.TRADE_ACTION_SLTP
+
+
+DEMO_CFG = {**CFG, "mode": "demo", "symbol": "XAUUSD", "equity_floor": 0.0, "account_login": None, "server": None}
+
+
+def test_demo_mode_trades_a_demo_account():
+    api = GoldMT5(equity=100000.0, login=5056424854, server="MetaQuotes-Demo", trade_mode=0)
+    out = ClaudeTrader(api, DEMO_CFG).place("sell", 4310.0, 4280.0, "test")
+    assert "CLAUDE SELL" in out and api.sent[-1]["magic"] == CFG["magic"] + CLAUDE_MAGIC_OFFSET
+
+
+def test_demo_mode_refuses_a_real_account():
+    with pytest.raises(OrderError, match="not a demo"):
+        ClaudeTrader(GoldMT5(), DEMO_CFG).place("buy", 4290.0, 4320.0, "x")
+
+
+@pytest.mark.parametrize("mode, lot", [("live", 0.2), ("demo", 1.5), ("live", None)])
+def test_lot_caps_hold_even_though_the_mcp_reads_raw_yaml(mode, lot):
+    with pytest.raises(OrderError, match="maximum"):
+        ClaudeTrader(GoldMT5(), {**CFG, "mode": mode, "fixed_lot": lot})
+
+
+def test_zero_price_is_refused():
+    c = _v(m=Market(0.0, 0.0, 0.01, 0.01, 1.0, 0, 2))
+    assert not c.ok and "no live price" in c.reasons[0]
+
+
+def test_spread_limit_is_configurable():
+    wide = Market(4300.0, 4300.61, 0.01, 0.01, 1.0, 0, 2)          # 61 points
+    assert not validate("buy", 4290.0, 4320.0, wide, LIM, 826.0, 0, 0, WED).ok
+    loose = Limits(LIM.lots, LIM.equity_floor, LIM.friday_hours, max_spread_points=120)
+    assert validate("buy", 4290.0, 4320.0, wide, loose, 826.0, 0, 0, WED).ok
+
+
+def test_risk_uses_mt5_profit_calculation_when_available():
+    # e.g. GBP demo account: MT5 says 0.1 lot moves 7.40 GBP per 1.00, tick_value alone would say 10
+    m = Market(4300.00, 4300.29, 0.01, 0.01, 1.0, 0, 2, value_per_price=7.4, currency="GBP")
+    c = _v(m=m, sl=4290.29, equity=100000.0)
+    assert c.risk == pytest.approx(74.0) and "GBP" in c.text("XAUUSD", 0.1)
+    assert "ALL HARD RULES PASSED" in c.text("XAUUSD", 0.1)
+
+
+def test_trader_asks_mt5_for_the_value_of_a_move():
+    class CalcMT5(GoldMT5):
+        def order_calc_profit(self, action, symbol, volume, open_price, close_price):
+            return round((close_price - open_price) * volume * 74, 2)   # 7.40 per 1.00 at 0.1 lot
+    t, _ = _trader(CalcMT5(equity=100000.0))
+    c = t.check("buy", 4290.29, 4320.0)
+    assert c.risk == pytest.approx(74.0)

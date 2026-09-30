@@ -1,0 +1,19 @@
+# MCP-only config: lets Claude Code trade the MetaQuotes DEMO account (no real money).
+# Not used by the executor. Register with:
+#   claude mcp add mt5demo -e MT5_MCP_TRADING=YES -e MT5_MCP_CONFIG=config.claude-demo.yaml -- <python> <src\mcp_server.py>
+mode: demo
+
+broker:
+  symbol: XAUUSD
+  timeframe: M5
+  magic_number: 20260930
+  terminal_path: 'C:\Program Files\MetaTrader 5\terminal64.exe'
+
+risk:
+  friday_close_hours_before: 3
+
+claude_demo:
+  lot: 0.1           # max 1.0 on demo (DEMO_MAX_LOT)
+  equity_floor: 0    # the 25% max risk per trade still applies
+  max_spread_points: 120   # MetaQuotes-Demo XAUUSD spread is often ~60 points
+  login_env: .env.demo     # the server logs the terminal into this DEMO account on every connect

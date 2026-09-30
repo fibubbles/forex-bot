@@ -17,15 +17,17 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from src.broker import LiveBroker, OrderError, assert_live_account_allowed
+from src.broker import LiveBroker, OrderError, assert_demo_account, assert_live_account_allowed
+from src.config_schema import HARD_MAX_MICRO_LOT
 from src.timeutils import is_past_friday_cutoff
 
 log = logging.getLogger(__name__)
 
 CLAUDE_MAGIC_OFFSET = 1          # Claude's positions use bot magic + 1
 MAX_RISK_PCT = 25.0              # of equity, per trade
-MAX_SPREAD_POINTS = 60           # ~2x the usual 29 points on XAUUSD.vxc
+MAX_SPREAD_POINTS = 60           # default: ~2x the usual 29 points on XAUUSD.vxc (config can override)
 MAX_ORDERS_PER_DAY = 5
+DEMO_MAX_LOT = 1.0               # demo accounts (MetaQuotes-Demo): no real money, still capped
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ class Market:
     tick_value: float
     stops_level_points: int
     digits: int
+    value_per_price: float | None = None  # account currency per 1.00 price move at our lot (from MT5)
+    currency: str = ""
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class Limits:
     lots: float
     equity_floor: float
     friday_hours: float
+    max_spread_points: float = MAX_SPREAD_POINTS
 
 
 @dataclass
@@ -56,11 +61,15 @@ class Check:
     risk: float = 0.0
     reward: float = 0.0
     reasons: list[str] = field(default_factory=list)
+    currency: str = ""
 
     def text(self, symbol: str, lots: float) -> str:
+        cur = f" {self.currency}" if self.currency else ""
         head = (f"{self.side.upper()} {symbol} {lots} lot @ ~{self.entry} | SL dist {self.sl_distance:.2f} "
-                f"(risk ~{self.risk:.2f}) | TP dist {self.tp_distance:.2f} (reward ~{self.reward:.2f})")
-        return head if self.ok else head + "\nREFUSED:\n- " + "\n- ".join(self.reasons)
+                f"(risk ~{self.risk:.2f}{cur}) | TP dist {self.tp_distance:.2f} (reward ~{self.reward:.2f}{cur})")
+        if self.ok:
+            return head + "\nALL HARD RULES PASSED (not an order: call place_order to send it)"
+        return head + "\nREFUSED:\n- " + "\n- ".join(self.reasons)
 
 
 def validate(side: str, sl: float, tp: float, m: Market, lim: Limits, equity: float,
@@ -78,8 +87,10 @@ def validate(side: str, sl: float, tp: float, m: Market, lim: Limits, equity: fl
     entry = m.ask if side == "buy" else m.bid
     sl_dist = entry - sl if side == "buy" else sl - entry
     tp_dist = tp - entry if side == "buy" else entry - tp
-    value_per_price = lim.lots / m.tick_size * m.tick_value  # account currency per 1.00 move
+    value_per_price = m.value_per_price or lim.lots / m.tick_size * m.tick_value  # per 1.00 move
     risk, reward = max(sl_dist, 0) * value_per_price, max(tp_dist, 0) * value_per_price
+    if m.bid <= 0 or m.ask <= 0:
+        return Check(False, side=side, reasons=["no live price yet (bid/ask is 0): try again in a few seconds"])
     spread = (m.ask - m.bid) / m.point
     min_dist = m.stops_level_points * m.point
 
@@ -97,14 +108,15 @@ def validate(side: str, sl: float, tp: float, m: Market, lim: Limits, equity: fl
         reasons.append(f"a stop-out would leave {equity - risk:.2f} < floor {lim.equity_floor:.2f}")
     if equity > 0 and risk / equity * 100 > MAX_RISK_PCT:
         reasons.append(f"risk {risk:.2f} is {risk / equity * 100:.0f}% of equity (max {MAX_RISK_PCT:.0f}%)")
-    if spread > MAX_SPREAD_POINTS:
-        reasons.append(f"spread {spread:.0f} pts > {MAX_SPREAD_POINTS}")
+    if spread > lim.max_spread_points:
+        reasons.append(f"spread {spread:.0f} pts > {lim.max_spread_points:.0f}")
     if is_past_friday_cutoff(lim.friday_hours, now_utc):
         reasons.append("Friday cutoff: no new entries before the weekend")
     if orders_today >= MAX_ORDERS_PER_DAY:
         reasons.append(f"daily limit reached: {orders_today}/{MAX_ORDERS_PER_DAY} Claude orders today")
 
-    return Check(not reasons, side, round(entry, m.digits), sl_dist, tp_dist, risk, reward, reasons)
+    return Check(not reasons, side, round(entry, m.digits), sl_dist, tp_dist, risk, reward, reasons,
+                 m.currency)
 
 
 class ClaudeTrader:
@@ -112,9 +124,14 @@ class ClaudeTrader:
 
     def __init__(self, api, cfg: dict, notify=None, audit=None) -> None:
         self.api, self.cfg = api, cfg
+        self.mode = cfg.get("mode", "live")
+        cap = DEMO_MAX_LOT if self.mode == "demo" else HARD_MAX_MICRO_LOT
+        if not cfg.get("fixed_lot") or cfg["fixed_lot"] > cap + 1e-9:
+            raise OrderError(f"lot {cfg.get('fixed_lot')} missing or above the {self.mode} maximum {cap}")
         self.magic = cfg["magic"] + CLAUDE_MAGIC_OFFSET
         self.symbol = cfg["symbol"]
-        self.limits = Limits(cfg["fixed_lot"], cfg["equity_floor"], cfg["friday_hours"])
+        self.limits = Limits(cfg["fixed_lot"], cfg["equity_floor"], cfg["friday_hours"],
+                             cfg.get("max_spread_points") or MAX_SPREAD_POINTS)
         self._notify = notify or (lambda text: None)
         self._audit = audit or (lambda kind, text: None)
 
@@ -122,7 +139,10 @@ class ClaudeTrader:
         acc = self.api.account_info()
         if acc is None:
             raise OrderError(f"account_info failed: {self.api.last_error()}")
-        assert_live_account_allowed(acc, self.cfg["account_login"], self.cfg["server"])
+        if self.mode == "demo":
+            assert_demo_account(acc, self.api.ACCOUNT_TRADE_MODE_DEMO)
+        else:
+            assert_live_account_allowed(acc, self.cfg["account_login"], self.cfg["server"])
         term = self.api.terminal_info()
         if not acc.trade_allowed or term is None or not term.trade_allowed:
             raise OrderError("Algo Trading is OFF in the MT5 terminal")
@@ -133,8 +153,15 @@ class ClaudeTrader:
         info, tick = self.api.symbol_info(self.symbol), self.api.symbol_info_tick(self.symbol)
         if info is None or tick is None:
             raise OrderError(f"no symbol data for {self.symbol}: {self.api.last_error()}")
+        # Let MT5 price a 1.00 move at our lot in the ACCOUNT currency (handles cent, GBP, contract size).
+        vpp = None
+        calc = getattr(self.api, "order_calc_profit", None)
+        if calc is not None and tick.ask > 0:
+            p = calc(self.api.ORDER_TYPE_BUY, self.symbol, self.limits.lots, tick.ask, tick.ask + 1.0)
+            vpp = abs(p) if p else None
+        acc = self.api.account_info()
         return Market(tick.bid, tick.ask, info.point, info.trade_tick_size, info.trade_tick_value,
-                      info.trade_stops_level, info.digits)
+                      info.trade_stops_level, info.digits, vpp, getattr(acc, "currency", "") or "")
 
     def _orders_today(self, now: datetime) -> int:
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)

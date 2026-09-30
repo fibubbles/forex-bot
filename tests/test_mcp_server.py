@@ -31,6 +31,7 @@ class FakeApi:
                                   NS(ticket=8, symbol="XAUUSD.vxc", type=1, volume=0.01, price_open=4300.0,
                                      sl=0.0, tp=0.0, price_current=4301.0, profit=-1.0,
                                      time=1790000000, magic=0)),
+                "terminal_info": NS(path="C:\\MT5", trade_allowed=True),
             }.get(name, True)
         return fn
 
@@ -129,3 +130,58 @@ def test_database_is_opened_read_only(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "DB_PATH", db)
     with pytest.raises(sqlite3.OperationalError):
         srv.db_query("INSERT INTO t VALUES (1)")
+
+
+def test_instructions_follow_the_mode(monkeypatch):
+    monkeypatch.setenv("MT5_MCP_TRADING", "YES")
+    s, _ = _server()
+    assert "REAL-MONEY" in _rpc(s, "initialize")["result"]["instructions"]
+    s.tools.mt5._settings_loader = lambda: {**SETTINGS, "mode": "demo"}
+    assert "DEMO" in _rpc(s, "initialize")["result"]["instructions"]
+
+
+def _fake_mt5_module(monkeypatch, trade_mode, server):
+    import sys
+    import types
+    calls = {}
+    mod = types.ModuleType("MetaTrader5")
+    mod.ACCOUNT_TRADE_MODE_DEMO = 0
+    mod.initialize = lambda **kw: calls.setdefault("init", kw) is not None
+    mod.account_info = lambda: NS(login=5056424854, server=server, trade_mode=trade_mode)
+    mod.shutdown = lambda: calls.setdefault("shutdown", True)
+    mod.last_error = lambda: (0, "ok")
+    monkeypatch.setitem(sys.modules, "MetaTrader5", mod)
+    return calls
+
+
+def test_demo_server_logs_into_the_demo_account(monkeypatch, tmp_path):
+    env = tmp_path / ".env.demo"
+    env.write_text("MT5_LOGIN=5056424854\nMT5_PASSWORD=pw\nMT5_SERVER=MetaQuotes-Demo\n")
+    calls = _fake_mt5_module(monkeypatch, trade_mode=0, server="MetaQuotes-Demo")
+    mt5 = srv.MT5(lambda: {**SETTINGS, "mode": "demo", "login_env": str(env), "terminal_path": "C:\\T"})
+    mt5.api()
+    assert calls["init"]["login"] == 5056424854 and calls["init"]["server"] == "MetaQuotes-Demo"
+
+
+def test_demo_server_refuses_a_real_account(monkeypatch):
+    calls = _fake_mt5_module(monkeypatch, trade_mode=2, server="ValetaxIntl-Live8")
+    mt5 = srv.MT5(lambda: {**SETTINGS, "mode": "demo", "login_env": None})
+    with pytest.raises(srv.ToolError, match="not a demo"):
+        mt5.api()
+    assert calls["shutdown"] and mt5._mt5 is None
+
+
+def test_live_server_never_logs_in(monkeypatch):
+    calls = _fake_mt5_module(monkeypatch, trade_mode=2, server="ValetaxIntl-Live8")
+    srv.MT5(lambda: {**SETTINGS, "login_env": ".env.cent"}).api()
+    assert "password" not in calls["init"]
+
+
+def test_order_tool_labels_follow_the_mode(monkeypatch):
+    monkeypatch.setenv("MT5_MCP_TRADING", "YES")
+    s, _ = _server()
+    desc = {t["name"]: t["description"] for t in _rpc(s, "tools/list")["result"]["tools"]}
+    assert desc["place_order"].startswith("REAL MONEY")
+    s.tools.mt5._settings_loader = lambda: {**SETTINGS, "mode": "demo"}
+    desc = {t["name"]: t["description"] for t in _rpc(s, "tools/list")["result"]["tools"]}
+    assert desc["place_order"].startswith("DEMO") and "REAL MONEY" not in desc["close_position"]
